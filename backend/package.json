@@ -1,0 +1,32 @@
+{
+  "name": "system-architecture-generator",
+  "version": "2.0.0",
+  "description": "基于约束的系统架构创成生成工具",
+  "main": "server.js",
+  "scripts": {
+    "start": "set NODE_OPTIONS=--max_old_space_size=8192 && node server.js",
+    "dev": "set NODE_OPTIONS=--max_old_space_size=8192 && nodemon server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "system-architecture",
+    "constraint-based",
+    "generative-design"
+  ],
+  "author": "系统架构创成生成工具开发团队",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "uuid": "^9.0.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "eslint-formatter-table": "^7.32.1",
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

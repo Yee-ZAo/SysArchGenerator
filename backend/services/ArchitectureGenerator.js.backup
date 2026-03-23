@@ -1,0 +1,655 @@
+const ConstraintSolver = require('./ConstraintSolver');
+const fs = require('fs');
+const path = require('path');
+
+class ModuleInstance {
+  constructor(moduleInfo, instanceId, parent = null, isVirtual = false) {
+    // 兼容 module_type 和 moduleType 两种命名
+    this.moduleType = moduleInfo.module_type || moduleInfo.moduleType;
+    this.name = moduleInfo.name;
+    this.instanceId = instanceId;
+    this.properties = { ...moduleInfo.properties };
+    
+    // 存储模块定义中的最大实例数和子模块容量
+    this.max_instances = moduleInfo.max_instances || 1;
+    this.max_children = moduleInfo.max_children || Infinity;
+    this.level = moduleInfo.level || 0;
+    
+    this.interfaces = moduleInfo.interfaces.map(intf => ({
+      ...intf,
+      id: `${this.instanceId}_${intf.id}`,
+      connected: false,
+      available: true
+    }));
+    
+    this.parent = parent;
+    this.children = [];
+    this.depth = parent ? parent.depth + 1 : 0;
+    this.isLeaf = false;
+    this.isVirtual = isVirtual; // 标记是否为虚拟实例
+  }
+// 添加子实例的方法，自动设置父子关系和深度
+  addChild(childInstance) {
+    childInstance.parent = this;
+    this.children.push(childInstance);
+    childInstance.depth = this.depth + 1;
+  }
+// 定义 toJSON 方法，确保序列化时不包含 parent 引用，避免循环引用问题
+  toJSON() {
+    const obj = { ...this };
+    delete obj.parent;
+    return obj;
+  }
+}
+
+class Connection {
+  constructor(source, target, sourceIntf, targetIntf) {
+    this.source = source.instanceId;
+    this.target = target.instanceId;
+    this.sourceIntf = sourceIntf.id;
+    this.targetIntf = targetIntf.id;
+    this.type = sourceIntf.type;
+  }
+}
+
+class ArchitectureGenerator {
+  constructor() {
+    // 正确转换环境变量类型
+    this.heapLimitMB = process.env.HEAP_LIMIT_MB ? parseInt(process.env.HEAP_LIMIT_MB, 10) : 4096;
+    this.memoryLogging = process.env.LOG_MEMORY === 'true';
+    this.solutionOutputDir = process.env.SOLUTION_OUTPUT_DIR || 'backend/uploads';
+  }
+
+  /**
+   * 生成架构解决方案的主入口方法
+   * 该方法负责从模块定义和约束条件生成所有可能的架构方案
+   * 
+   * @param {Array} modules - 模块定义数组，包含模块类型、接口、属性等信息
+   * @param {Object} constraints - 约束条件对象，用于限制架构生成
+   * @param {number} maxSolutions - 最大解决方案数量限制，默认99999
+   * @returns {Promise<Object>} 包含生成结果的对象
+   */
+  async generateSolutions(modules, constraints, maxSolutions = 99999) {
+    // 初始化内存限制和计数器
+    const heapLimit = this.heapLimitMB;
+    this.solutionCount = 0;
+    this.constraintSolver = new ConstraintSolver(constraints);
+
+    /**
+     * 内存使用检查函数
+     * 实时监控Node.js进程的堆内存使用情况
+     * @returns {number} 当前内存使用量（MB）
+     */
+    const checkMemoryUsage = () => {
+      const used = process.memoryUsage().heapUsed / 1024 / 1024;
+      if (this.memoryLogging) {
+        console.log(`内存使用: ${Math.round(used)}MB`);
+      }
+      return used;
+    };
+
+    try {
+      // ==================== 文件路径准备阶段 ====================
+      // 生成基于时间戳的唯一文件名，避免文件冲突
+      const timestamp = new Date().toISOString().replace(/[:\\.]/g, '-');
+      let solutionFileName = `solutions_${timestamp}.json`;
+      const solutionDir = path.join(__dirname, `../${this.solutionOutputDir}`);
+      
+      // 确保输出目录存在，不存在则创建
+      if (!fs.existsSync(solutionDir)) {
+        fs.mkdirSync(solutionDir, { recursive: true });
+      }
+
+      // 检查文件是否已存在，存在则添加随机后缀
+      let solutionFilePath = path.join(solutionDir, solutionFileName);
+      if (fs.existsSync(solutionFilePath)) {
+        solutionFileName = `solutions_${timestamp}_${Math.floor(Math.random() * 10000)}.json`;
+        solutionFilePath = path.join(solutionDir, solutionFileName);
+      }
+
+      // ==================== 文件流初始化 ====================
+      // 创建文件写入流，采用流式写入避免内存溢出
+      const writeStream = fs.createWriteStream(solutionFilePath);
+      writeStream.write('['); // 写入JSON数组开始标记
+
+      // ==================== 架构树构建阶段 ====================
+      // 将扁平模块列表转换为层次化的树结构
+      const rootModules = this.buildModuleTree(modules);
+      let isFirstSolution = true; // 标记是否为第一个解决方案，用于JSON逗号分隔
+
+      // ==================== 主解决方案生成循环 ====================
+      // 遍历所有根模块，为每个根模块生成可能的架构树
+      for (const rootModule of rootModules) {
+        // 生成该根模块的所有可能实例树结构
+        let instanceTrees = this.generateInstanceTrees(rootModule, null, constraints);
+        // 应用约束条件到实例树
+        instanceTrees = this.applyConstraints(instanceTrees, constraints);
+
+        // 遍历每个实例树，生成具体的架构方案
+        for (const instanceTree of instanceTrees) {
+          // 检查是否达到最大解决方案数量限制
+          if (this.solutionCount >= maxSolutions) break;
+          
+          // ==================== 接口数据收集 ====================
+          // 从实例树中收集所有输入和输出接口
+          const inputs = [];
+          const outputs = [];
+          this.collectInterfaceData(instanceTree, inputs, outputs);
+          
+          // ==================== 连接生成阶段 ====================
+          // 基于接口匹配算法生成模块间的连接关系
+          const connectionSets = this.generateAllConnectionSets(inputs, outputs, 10);
+          
+          // 遍历每个连接集，生成独立的解决方案
+          for (const connections of connectionSets) {
+            // 检查是否达到最大解决方案数量限制
+            if (this.solutionCount >= maxSolutions) break;
+            
+            // ==================== 内存安全检查 ====================
+            // 在关键操作后检查内存使用情况，防止内存溢出
+            if (checkMemoryUsage() > heapLimit * 0.8) {
+              console.error('内存不足中止生成');
+              await this.closeWriteStream(writeStream);
+              return {
+                success: false,
+                error: "内存不足终止生成",
+                count: this.solutionCount,
+                filePath: solutionFilePath
+              };
+            }
+            
+            // ==================== 解决方案对象构建 ====================
+            // 构建完整的解决方案对象，包含架构树、连接关系和属性统计
+            const solution = {
+              id: `sol_${this.solutionCount}`,           // 唯一标识符
+              moduleTree: instanceTree,                   // 模块实例树结构
+              connections,                                // 模块间连接关系
+              properties: this.calculateChunkProperties(instanceTree, connections) // 架构属性统计
+            };
+
+            // ==================== 约束条件验证 ====================
+            // 使用约束求解器验证当前解决方案是否满足所有约束条件
+            if (!this.constraintSolver.satisfiesConstraints(solution)) continue;
+
+            // ==================== 文件写入阶段 ====================
+            // 处理JSON数组的逗号分隔（第一个元素前不加逗号）
+            if (!isFirstSolution) {
+              writeStream.write(',');
+            } else {
+              isFirstSolution = false;
+            }
+
+            // 异步写入解决方案到文件流，处理可能的写入错误
+            const writeErr = await this.writeSolution(writeStream, solution);
+            if (writeErr) {
+              console.error('写入解决方案失败:', writeErr);
+              return { success: false, error: writeErr.message };
+            }
+
+            // 成功计数递增
+            this.solutionCount++;
+            
+            // ==================== 写入后内存检查 ====================
+            // 再次检查内存使用情况，确保系统稳定性
+            if (checkMemoryUsage() > heapLimit * 0.8) {
+              console.error('内存不足中止生成');
+              await this.closeWriteStream(writeStream);
+              return {
+                success: false,
+                error: "内存不足终止生成",
+                count: this.solutionCount,
+                filePath: solutionFilePath
+              };
+            }
+          }
+        }
+      }
+
+      // ==================== 文件流关闭阶段 ====================
+      // 安全关闭文件写入流，写入JSON数组结束标记
+      const closeErr = await this.closeWriteStream(writeStream);
+      if (closeErr) {
+        return { success: false, error: closeErr.message };
+      }
+
+      // ==================== 生成结果返回 ====================
+      console.log(`生成完成: ${this.solutionCount}个完整方案, 路径: ${solutionFilePath}`);
+      return {
+        success: this.solutionCount > 0,                           // 生成是否成功
+        count: this.solutionCount,                                // 生成的方案数量
+        filePath: solutionFilePath,                               // 解决方案文件路径
+        solutions: JSON.parse(fs.readFileSync(solutionFilePath, 'utf8')) // 读取并返回解决方案数组
+      };
+    } catch (error) {
+      // ==================== 异常处理 ====================
+      // 捕获并记录生成过程中的任何异常，返回错误信息
+      console.error('方案生成失败:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 将解决方案异步写入文件流
+   * 该方法将解决方案对象序列化为JSON字符串并写入指定的文件流
+   * 
+   * @param {stream.Writable} writeStream - 可写文件流对象，用于接收解决方案数据
+   * @param {Object} solution - 要写入的架构解决方案对象
+   * @returns {Promise<Error|null>} 返回Promise，resolve时返回错误对象（写入失败）或null（写入成功）
+   * @example
+   * // 使用示例
+   * const writeStream = fs.createWriteStream('solution.json');
+   * const result = await writeSolution(writeStream, solution);
+   * if (result) {
+   *   console.error('写入失败:', result);
+   * } else {
+   *   console.log('写入成功');
+   * }
+   */
+  async writeSolution(writeStream, solution) {
+    return new Promise((resolve) => {
+      writeStream.write(JSON.stringify(solution), (err) => {
+        if (err) resolve(err);
+        else resolve(null);
+      });
+    });
+  }
+
+  async closeWriteStream(writeStream) {
+    return new Promise((resolve) => {
+      writeStream.end(']', (err) => {
+        if (err) resolve(err);
+        else resolve(null);
+      });
+    });
+  }
+
+  buildModuleTree(modules) {
+    const moduleMap = new Map(modules.map(m => [m.name, m]));
+    const rootModules = [];
+
+    modules.forEach(module => {
+      if (module.parent_module) {
+        const parent = moduleMap.get(module.parent_module);
+        if (parent) {
+          if (!parent.children) parent.children = [];
+          parent.children.push(module);
+        }
+      } else {
+        rootModules.push(module);
+      }
+    });
+
+    return rootModules;
+  }
+
+  // 重构后的树生成方法，支持约束剪枝
+  generateInstanceTrees(module, parentInstance = null, constraints) {
+    const instances = this.generateInstances(module, parentInstance);
+    const trees = [];
+
+    // 如果父实例为null且没有实例（根节点跳过实例生成），创建一个虚拟根实例以保持树结构
+    if (parentInstance === null && instances.length === 0 && module.children && module.children.length > 0) {
+      const virtualRootInstance = new ModuleInstance(module, `${module.name}_virtual`, null, true); // isVirtual = true
+      // 为每个子模块生成子树，以虚拟根实例作为父实例
+      const virtualTreeNode = {
+        instance: virtualRootInstance,
+        children: []
+      };
+      module.children.forEach(childModule => {
+        const childTrees = this.generateInstanceTrees(childModule, virtualRootInstance, constraints);
+        virtualTreeNode.children.push(...childTrees);
+      });
+      // 检查约束
+      if (this.canPrune(virtualTreeNode, constraints)) {
+        trees.push(virtualTreeNode);
+      }
+      return trees;
+    }
+
+    instances.forEach(instance => {
+      // 首先检查当前节点是否满足约束
+      const partialTree = {
+        instance: instance,
+        children: []  // 初始为空子树
+      };
+      
+      // 检查节点约束
+      if (!this.canPrune(partialTree, constraints)) {
+        return; // 不满足约束则跳过整个子树
+      }
+
+      const treeNode = {
+        instance: instance,
+        children: []
+      };
+
+      // 生成子树
+      if (module.children && module.children.length > 0) {
+        module.children.forEach(childModule => {
+          // 递归生成子树时携带约束
+          const childTrees = this.generateInstanceTrees(childModule, instance, constraints);
+          treeNode.children.push(...childTrees);
+        });
+      }
+
+      // 再次检查完整子树约束
+      if (!this.canPrune(treeNode, constraints)) {
+        return;
+      }
+
+      trees.push(treeNode);
+    });
+
+    return trees;
+  }
+
+  generateInstances(module, parent = null) {
+    const instances = [];
+    try {
+      module.level = module.level || 1;
+      let maxQty = this.calculateMaxQuantity(module, parent);
+      
+      // 添加更严格的根节点上限约束
+      if (!parent) {
+        maxQty = Math.min(maxQty, 5); // 硬性限制根节点数量不超过5个
+        if (maxQty > 5) {
+          console.warn(`根节点生成限制生效：由${maxQty}减少为5`);
+        }
+      }
+      
+      maxQty = Math.max(0, Math.min(maxQty, 100)); // 允许0，根节点不生成实例
+      
+      // 优化日志输出 - 根节点只显示摘要
+      if (!parent && maxQty > 0) {
+        console.log(`创建根节点 [${module.name}]，将生成${maxQty}个实例`);
+      } else if (!parent && maxQty === 0) {
+        console.log(`根节点 [${module.name}] 跳过实例生成`);
+      }
+
+      // 使用对象池模式管理实例创建
+      for (let id = 1; id <= maxQty; id++) {
+        const instanceId = `${module.name}_${id}`;
+        const newInstance = new ModuleInstance(module, instanceId, parent);
+        
+        if (parent) {
+          parent.addChild(newInstance);
+        }
+        
+        instances.push(newInstance);
+      }
+    } catch (error) {
+      console.error(`实例生成失败: ${error.message}`);
+    }
+    return instances;
+  }
+
+  calculateMaxQuantity(module, parent) {
+    module.level = module.level || 1;
+    
+    // 获取模块的数量范围参数
+    const quantityMin = module.quantity_min || 1;
+    const quantityMax = module.quantity_max || module.max_instances || 1;
+    const maxInstances = module.max_instances || 1;
+    
+    // 计算父模块可用槽位（根节点为Infinity）
+    const availableSlots = parent ? this.getAvailableSlotCount(parent) : Infinity;
+    
+    // 叶子模块（没有子模块）
+    if (!module.children || module.children.length === 0) {
+      // 叶子模块的实例数受自身数量范围、最大实例数和父模块可用槽位限制
+      const maxAllowed = Math.min(quantityMax, maxInstances, availableSlots);
+      const minRequired = Math.max(quantityMin, 1);
+      
+      // 如果最小需求大于最大允许，则无法生成实例
+      if (minRequired > maxAllowed) {
+        console.warn(`模块 ${module.name} 数量范围冲突: min=${minRequired}, max=${maxAllowed}`);
+        return 0;
+      }
+      
+      // 返回最大允许数量（兼容现有代码，实际应返回范围）
+      return maxAllowed;
+    }
+    
+    // 非叶子模块（有子模块）
+    // 非叶子模块的实例数受自身数量范围、最大实例数和父模块可用槽位限制
+    const maxAllowed = Math.min(quantityMax, maxInstances, availableSlots);
+    const minRequired = Math.max(quantityMin, 1);
+    
+    // 层级检查（仅当有父节点时）
+    if (parent && module.level <= parent.level) {
+      throw new Error(`模块层级冲突: ${module.name} (${module.level} <= ${parent.level})`);
+    }
+    
+    // 如果最小需求大于最大允许，则无法生成实例
+    if (minRequired > maxAllowed) {
+      console.warn(`模块 ${module.name} 数量范围冲突: min=${minRequired}, max=${maxAllowed}`);
+      return 0;
+    }
+    
+    return maxAllowed;
+  }
+
+  getAvailableSlotCount(parent) {
+    if (!parent) return Infinity;
+    const parentMax = parent.max_children || Infinity;
+    const childrenCount = parent.children ? parent.children.length : 0;
+    const available = Math.max(0, parentMax - childrenCount);
+    console.log(`计算可用槽位: 父模块=${parent.name}, 上限=${parentMax}, 已有子模块=${childrenCount}, 可用槽位=${available}`);
+    return available;
+  }
+
+  // 连接生成算法：支持多连接接口和全局优先级匹配
+  generateConnections(inputs, outputs) {
+    const connections = [];
+    
+    // 初始化接口状态
+    this.setInterfaceStatus(inputs, true, false);
+    this.setInterfaceStatus(outputs, true, false);
+    
+    const priorityTypes = ['POWER', 'CONTROL', 'DATA', 'OTHER'];
+    const availableInputs = inputs.filter(i => i.intf.available);
+    const availableOutputs = outputs.filter(o => o.intf.available);
+  
+    // 按优先级匹配接口
+    priorityTypes.forEach(type => {
+      availableInputs
+        .filter(input => input.intf.available && input.intf.type === type)
+        .forEach(input => {
+          const candidate = availableOutputs.find(output => {
+            // 类型必须匹配
+            if (output.intf.type !== type) return false;
+            // 协议匹配：如果任一协议缺失，视为匹配
+            if (output.intf.protocol !== undefined && input.intf.protocol !== undefined) {
+              if (output.intf.protocol !== input.intf.protocol) return false;
+            }
+            // 速率匹配：如果任一速率缺失，视为匹配；否则输出速率必须大于等于输入速率
+            if (output.intf.rate !== undefined && input.intf.rate !== undefined) {
+              if (output.intf.rate < input.intf.rate) return false;
+            }
+            // 接口必须可用
+            return output.intf.available;
+          });
+          
+          if (candidate) {
+            connections.push(new Connection(
+              candidate.inst,
+              input.inst,
+              candidate.intf,
+              input.intf
+            ));
+            
+            // 更新接口状态
+            const supportsMultiOut = candidate.intf.supportsMultiConnections || false;
+            const supportsMultiIn = input.intf.supportsMultiConnections || false;
+            candidate.intf.connected = true;
+            candidate.intf.available = !supportsMultiOut;
+            input.intf.connected = true;
+            input.intf.available = !supportsMultiIn;
+          }
+        });
+    });
+    
+    return connections;
+  }
+
+  calculateChunkProperties(instanceTree, connections) {
+    const properties = {
+      totalConnections: connections.length,
+      leafModules: 0
+    };
+
+    const traverse = (node) => {
+      // 跳过虚拟实例
+      if (node.instance && node.instance.isVirtual) {
+        // 虚拟实例不计入叶子模块，但继续遍历其子节点
+        node.children.forEach(child => traverse(child));
+        return;
+      }
+      
+      if (node.children.length === 0) {
+        properties.leafModules++;
+      } else {
+        node.children.forEach(child => traverse(child));
+      }
+    };
+
+    traverse(instanceTree);
+    return properties;
+  }
+
+  applyConstraints(instanceTrees, constraints) {
+    if (!constraints) return instanceTrees;
+    
+    // 调用约束求解器进行节点级剪枝
+    return this.constraintSolver.pruneTrees(instanceTrees, constraints);
+  }
+  
+  // 约束剪枝方法（实际调用委托给ConstraintSolver）
+  canPrune(treeNode, constraints) {
+    return this.constraintSolver.canPruneNode(treeNode, constraints);
+  }
+
+  collectInterfaceData(tree, inputs, outputs) {
+    const traverse = (node) => {
+      // 跳过虚拟实例的接口收集
+      if (node.instance && node.instance.isVirtual) {
+        // 虚拟实例不参与连接生成
+        node.children.forEach(child => traverse(child));
+        return;
+      }
+      
+      if (node.instance && node.instance.interfaces) {
+        node.instance.interfaces.forEach(intf => {
+          const item = { inst: node.instance, intf };
+          if (intf.io_type === 'input') {
+            inputs.push(item);
+          } else if (intf.io_type === 'output') {
+            outputs.push(item);
+          }
+        });
+      }
+
+      node.children.forEach(child => traverse(child));
+    };
+
+    traverse(tree);
+  }
+
+// 统一设置接口状态的方法
+setInterfaceStatus(interfaces, available, connected) {
+  interfaces.forEach(i => {
+    i.intf.available = available;
+    i.intf.connected = connected;
+  });
+}
+
+/**
+ * 生成所有可能的连接组合（回溯算法）
+ * @param {Array} inputs - 输入接口列表
+ * @param {Array} outputs - 输出接口列表
+ * @param {number} maxSets - 最大返回方案数，防止组合爆炸
+ * @returns {Array} 连接集合的数组，每个元素是一个Connection数组
+ */
+generateAllConnectionSets(inputs, outputs, maxSets = 100) {
+  const results = [];
+  // 初始化接口状态
+  this.setInterfaceStatus(inputs, true, false);
+  this.setInterfaceStatus(outputs, true, false);
+
+  // 深度优先搜索递归函数
+  const dfs = (remainingInputs, remainingOutputs, currentConnections, startIdx) => {
+    // 如果已经达到最大方案数，停止搜索
+    if (results.length >= maxSets) return;
+
+    // 如果所有输入接口都已处理或没有更多可用输入，记录当前方案
+    if (remainingInputs.length === 0) {
+      results.push([...currentConnections]);
+      return;
+    }
+
+    // 选择第一个可用的输入接口
+    const input = remainingInputs[0];
+    if (!input.intf.available) {
+      // 该输入接口已不可用（例如已被匹配且不支持多连接），跳过
+      dfs(remainingInputs.slice(1), remainingOutputs, currentConnections, 0);
+      return;
+    }
+
+    // 找出所有可能匹配的输出接口
+    const candidateOutputs = remainingOutputs.filter(output => {
+      if (!output.intf.available) return false;
+      // 类型匹配
+      if (output.intf.type !== input.intf.type) return false;
+      // 协议匹配
+      if (output.intf.protocol !== undefined && input.intf.protocol !== undefined) {
+        if (output.intf.protocol !== input.intf.protocol) return false;
+      }
+      // 速率匹配
+      if (output.intf.rate !== undefined && input.intf.rate !== undefined) {
+        if (output.intf.rate < input.intf.rate) return false;
+      }
+      return true;
+    });
+
+    // 尝试不匹配该输入接口（允许未连接）
+    dfs(remainingInputs.slice(1), remainingOutputs, currentConnections, 0);
+
+    // 尝试匹配每个候选输出
+    for (let i = 0; i < candidateOutputs.length; i++) {
+      const output = candidateOutputs[i];
+      // 创建连接
+      const conn = new Connection(output.inst, input.inst, output.intf, input.intf);
+      // 保存当前状态
+      const prevInputAvailable = input.intf.available;
+      const prevInputConnected = input.intf.connected;
+      const prevOutputAvailable = output.intf.available;
+      const prevOutputConnected = output.intf.connected;
+
+      // 更新接口状态
+      const supportsMultiOut = output.intf.supportsMultiConnections || false;
+      const supportsMultiIn = input.intf.supportsMultiConnections || false;
+      output.intf.connected = true;
+      output.intf.available = !supportsMultiOut;
+      input.intf.connected = true;
+      input.intf.available = !supportsMultiIn;
+
+      // 递归搜索剩余输入（排除当前输入）和剩余输出（如果输出不可用则排除）
+      const newRemainingInputs = remainingInputs.slice(1);
+      const newRemainingOutputs = remainingOutputs.filter(o => o !== output || supportsMultiOut);
+      dfs(newRemainingInputs, newRemainingOutputs, [...currentConnections, conn], 0);
+
+      // 回溯恢复状态
+      input.intf.available = prevInputAvailable;
+      input.intf.connected = prevInputConnected;
+      output.intf.available = prevOutputAvailable;
+      output.intf.connected = prevOutputConnected;
+    }
+  };
+
+  // 开始搜索
+  dfs(inputs, outputs, [], 0);
+  return results;
+}
+}
+
+module.exports = ArchitectureGenerator;

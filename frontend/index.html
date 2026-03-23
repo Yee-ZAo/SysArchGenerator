@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>基于约束的系统架构创成生成工具 v3.0</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="lib/xlsx.full.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- 侧边导航栏 -->
+        <div class="sidebar">
+            <div class="logo">
+                <i class="fas fa-robot"></i>
+                <h2>架构创成工具</h2>
+                <span class="version">v3.0</span>
+            </div>
+            
+            <nav class="nav-menu">
+                <ul>
+                    <li class="nav-item" data-page="architecture-import">
+                        <i class="fas fa-file-import"></i>
+                        <span>架构导入</span>
+                    </li>
+                    <li class="nav-item" data-page="constraint-input">
+                        <i class="fas fa-sliders-h"></i>
+                        <span>约束输入</span>
+                    </li>
+                    <li class="nav-item" data-page="generation-design">
+                        <i class="fas fa-project-diagram"></i>
+                        <span>创成设计</span>
+                    </li>
+                    <li class="nav-item" data-page="result-export">
+                        <i class="fas fa-file-export"></i>
+                        <span>结果导出</span>
+                    </li>
+                    <li class="nav-item" data-page="product-library">
+                        <i class="fas fa-database"></i>
+                        <span>产品库</span>
+                    </li>
+                </ul>
+            </nav>
+            
+            <div class="system-status">
+                <h3>系统状态</h3>
+                <div class="status-item">
+                    <span>模块数量:</span>
+                    <span id="module-count">0</span>
+                </div>
+                <div class="status-item">
+                    <span>约束数量:</span>
+                    <span id="constraint-count">0</span>
+                </div>
+                <div class="status-item">
+                    <span>方案数量:</span>
+                    <span id="solution-count">0</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 主内容区 -->
+        <div class="main-content">
+            <!-- 架构导入页面 -->
+            <div id="architecture-import" class="page active">
+                <div class="page-header">
+                    <h1><i class="fas fa-file-import"></i> 架构导入</h1>
+                    <p>导入系统架构文件，支持JSON、Excel、XML格式</p>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-upload"></i> 文件上传</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="file-upload-area">
+                            <div class="upload-box" id="drop-area">
+                                <i class="fas fa-cloud-upload-alt fa-2x"></i>
+                                <h4>拖放文件到这里或点击上传</h4>
+                                <p>支持JSON、Excel、XML格式</p>
+                                <input type="file" id="file-input" accept=".json,.xlsx,.xls,.xml" style="display: none;">
+                                <input type="file" id="product-library-input" accept=".xlsx,.xls" style="display: none;">
+                                <button class="btn btn-primary" onclick="document.getElementById('file-input').click()">
+                                    <i class="fas fa-folder-open"></i> 选择文件
+                                </button>
+                                <button class="btn btn-secondary" id="product-library-import-btn" style="margin-left: 10px;" onclick="document.getElementById('product-library-input').click()">
+                                    <i class="fas fa-database"></i> 产品库导入
+                                </button>
+                            </div>
+                            
+                            <div class="upload-info">
+                                <div class="info-row">
+                                    <span>已选择文件:</span>
+                                    <span id="selected-file">无</span>
+                                </div>
+                                <div class="info-row">
+                                    <span>文件大小:</span>
+                                    <span id="file-size">-</span>
+                                </div>
+                                <div class="info-row">
+                                    <span>文件类型:</span>
+                                    <span id="file-type">-</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="action-buttons">
+                            <button id="load-file-btn" class="btn btn-primary" disabled>
+                                <i class="fas fa-spinner fa-spin d-none" id="load-spinner"></i>
+                                <span>读取文件</span>
+                            </button>
+                            <button id="clear-file-btn" class="btn btn-secondary">
+                                <i class="fas fa-trash-alt"></i> 清空
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-table"></i> 模块信息</h3>
+                        <div class="card-actions">
+                            <button id="refresh-modules" class="btn btn-sm btn-secondary">
+                                <i class="fas fa-sync-alt"></i> 刷新
+                            </button>
+                            <button id="clear-modules" class="btn btn-sm btn-danger">
+                                <i class="fas fa-trash-alt"></i> 清除
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table id="module-table" class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>名称</th>
+                                        <th>类型</th>
+                                        <th>分类</th>
+                                        <th>层级</th>
+                                        <th>上级模块</th>
+                                        <th>数量</th>
+                                        <th>成本</th>
+                                        <th>重量</th>
+                                        <th>功耗</th>
+                                        <th>可靠度</th>
+                                        <th>接口数</th>
+                                        <th>叶子模块</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- 模块数据将通过JavaScript动态填充 -->
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="table-info">
+                            <span>共 <span id="module-table-count">0</span> 个模块</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 约束输入页面 -->
+            <div id="constraint-input" class="page">
+                <div class="page-header">
+                    <h1><i class="fas fa-sliders-h"></i> 约束输入</h1>
+                    <p>定义系统架构的约束条件，包括连接关系和参数约束</p>
+                </div>
+                
+                <div class="two-column-layout">
+                    <div class="column">
+                        <div class="card">
+                            <div class="card-header">
+                                <h3><i class="fas fa-list"></i> 约束列表</h3>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table id="constraint-table" class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th>ID</th>
+                                                <th>类型</th>
+                                                <th>约束对象</th>
+                                                <th>约束内容</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <!-- 约束数据将通过JavaScript动态填充 -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div class="constraint-actions">
+                                    <button id="delete-constraint" class="btn btn-danger" disabled>
+                                        <i class="fas fa-trash-alt"></i> 删除选中
+                                    </button>
+                                    <button id="clear-constraints" class="btn btn-warning">
+                                        <i class="fas fa-broom"></i> 清空所有
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="column">
+                        <div class="card">
+                            <div class="card-header">
+                                <h3><i class="fas fa-plus-circle"></i> 添加新约束</h3>
+                            </div>
+                            <div class="card-body">
+                                <div class="form-group">
+                                    <label for="constraint-type"><i class="fas fa-filter"></i> 约束类型</label>
+                                    <select id="constraint-type" class="form-control">
+                                        <option value="">请选择约束类型</option>
+                                        <option value="connection">连接关系</option>
+                                        <option value="parameter">参数约束</option>
+                                    </select>
+                                </div>
+                                
+                                <!-- 连接关系约束输入 -->
+                                <div id="connection-constraint-form" class="constraint-form d-none">
+                                    <div class="form-group">
+                                        <label for="relation-type"><i class="fas fa-link"></i> 关系类型</label>
+                                        <select id="relation-type" class="form-control">
+                                            <option value="binding">绑定</option>
+                                            <option value="mutual_exclusion">互斥</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <div class="form-group">
+                                        <label for="module1"><i class="fas fa-cube"></i> 模块A</label>
+                                        <select id="module1" class="form-control">
+                                            <option value="">请选择模块</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <div class="form-group">
+                                        <label for="module2"><i class="fas fa-cube"></i> 模块B</label>
+                                        <select id="module2" class="form-control">
+                                            <option value="">请选择模块</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <div class="form-help">
+                                        <p><strong>绑定关系：</strong>两个模块必须同时存在并连接</p>
+                                        <p><strong>互斥关系：</strong>两个模块不能同时存在或不能连接</p>
+                                    </div>
+                                </div>
+                                
+                                <!-- 参数约束输入 -->
+                                <div id="parameter-constraint-form" class="constraint-form d-none">
+                                    <div class="form-group">
+                                        <label for="target-type"><i class="fas fa-bullseye"></i> 约束对象</label>
+                                        <select id="target-type" class="form-control">
+                                            <option value="overall">总体</option>
+                                            <!-- 模块选项将通过JavaScript动态添加 -->
+                                        </select>
+                                    </div>
+                                    
+                                    <div class="form-group">
+                                        <label for="parameter-type"><i class="fas fa-chart-bar"></i> 参数类型</label>
+                                        <select id="parameter-type" class="form-control">
+                                            <option value="quantity">数量</option>
+                                            <option value="cost">成本</option>
+                                            <option value="weight">重量</option>
+                                            <option value="power">功耗</option>
+                                            <option value="reliability">可靠度</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <div class="form-row">
+                                        <div class="form-group col-md-6">
+                                            <label for="min-value"><i class="fas fa-arrow-down"></i> 最小值</label>
+                                            <input type="number" id="min-value" class="form-control" value="0" step="0.01">
+                                        </div>
+                                        <div class="form-group col-md-6">
+                                            <label for="max-value"><i class="fas fa-arrow-up"></i> 最大值</label>
+                                            <input type="number" id="max-value" class="form-control" value="1000000" step="0.01">
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="form-help">
+                                        <p id="parameter-unit">单位：个（模块总数）</p>
+                                    </div>
+                                </div>
+                                
+                                <div class="form-actions">
+                                    <button id="add-constraint-btn" class="btn btn-primary" disabled>
+                                        <i class="fas fa-plus"></i> 添加约束
+                                    </button>
+                                    <button id="reset-constraint-form" class="btn btn-secondary">
+                                        <i class="fas fa-redo"></i> 重置表单
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 创成设计页面 -->
+            <div id="generation-design" class="page">
+                <div class="page-header">
+                    <h1><i class="fas fa-project-diagram"></i> 创成设计</h1>
+                    <p>基于约束条件生成架构方案，并可视化展示</p>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-cogs"></i> 方案生成控制</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="generation-controls">
+                            <div class="control-info">
+                                <p><i class="fas fa-info-circle"></i> 当前已加载 <span id="loaded-module-count">0</span> 个模块模板，<span id="loaded-constraint-count">0</span> 个约束条件</p>
+                            </div>
+                            
+                            <div class="control-buttons">
+                                <button id="refresh-controls-btn" class="btn btn-secondary">
+                                    <i class="fas fa-sync-alt"></i> 刷新状态
+                                </button>
+                                <button id="generate-solutions-btn" class="btn btn-primary">
+                                    <i class="fas fa-play"></i> 开始创成生成
+                                </button>
+                                <button id="stop-generation-btn" class="btn btn-danger d-none">
+                                    <i class="fas fa-stop"></i> 停止生成
+                                </button>
+                                <button id="clear-solutions-btn" class="btn btn-warning">
+                                    <i class="fas fa-trash-alt"></i> 清空方案
+                                </button>
+                            </div>
+                            
+                            <div class="generation-progress d-none" id="generation-progress">
+                                <div class="progress-header">
+                                    <span>创成设计进度</span>
+                                    <span id="progress-text">0%</span>
+                                </div>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+                                </div>
+                                <div class="progress-info">
+                                    <span>当前阶段: <span id="progress-detail">初始化</span></span>
+                                    <span>已生成方案: <span id="generated-count">0</span></span>
+                                </div>
+                                <div class="progress-status">
+                                    <span id="generation-status">正在处理...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="two-column-layout">
+                    <div class="column">
+                        <div class="card">
+                            <div class="card-header">
+                                <h3><i class="fas fa-list-ol"></i> 方案列表</h3>
+                                <div class="card-actions">
+                                    <div class="input-group compact">
+                                        <input type="text" id="solution-filter" class="form-control" placeholder="搜索方案...">
+                                        <button class="btn btn-secondary" id="filter-solutions">
+                                            <i class="fas fa-search"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table id="solution-table" class="data-table">
+                                        <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>模块数</th>
+                                        <th>连接数</th>
+                                        <th>成本</th>
+                                        <th>重量</th>
+                                        <th>功耗</th>
+                                        <th>可靠度</th>
+                                        <th>操作</th>
+                                    </tr>
+                                        </thead>
+                                        <tbody>
+                                            <!-- 方案数据将通过JavaScript动态填充 -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div class="table-info">
+                                    <span>共 <span id="solution-table-count">0</span> 个方案</span>
+                                    <div class="pagination" id="solution-pagination">
+                                        <!-- 分页控件将通过JavaScript动态生成 -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="column">
+                        <div class="card">
+                            <div class="card-header">
+                                <h3><i class="fas fa-eye"></i> 方案详情</h3>
+                                <div class="card-actions">
+                                    <button id="prev-solution" class="btn btn-sm btn-secondary" disabled>
+                                        <i class="fas fa-chevron-left"></i> 上一个
+                                    </button>
+                                    <span id="solution-nav-text" class="nav-text">0/0</span>
+                                    <button id="next-solution" class="btn btn-sm btn-secondary" disabled>
+                                        <i class="fas fa-chevron-right"></i> 下一个
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div id="solution-detail">
+                                    <div class="no-solution-selected">
+                                        <i class="fas fa-info-circle fa-3x"></i>
+                                        <h4>未选择方案</h4>
+                                        <p>请从左侧方案列表中选择一个方案查看详情</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-sitemap"></i> 架构拓扑图</h3>
+                        <div class="card-actions">
+                            <button id="auto-layout-btn" class="btn btn-sm btn-primary">
+                                <i class="fas fa-th"></i> 自动布局
+                            </button>
+                            <button id="force-layout-btn" class="btn btn-sm btn-primary">
+                                <i class="fas fa-magnet"></i> 力导向布局
+                            </button>
+                            <button id="fit-view-btn" class="btn btn-sm btn-secondary">
+                                <i class="fas fa-expand"></i> 适应视图
+                            </button>
+                            <button id="export-graph-btn" class="btn btn-sm btn-success">
+                                <i class="fas fa-download"></i> 导出图片
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div id="topology-container">
+                            <div class="graph-placeholder">
+                                <i class="fas fa-project-diagram fa-5x"></i>
+                                <h4>架构拓扑图</h4>
+                                <p>选择一个方案以查看其拓扑图</p>
+                            </div>
+                            <canvas id="topology-canvas" width="100%" height="100%" class="d-none"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 结果导出页面 -->
+            <div id="result-export" class="page">
+                <div class="page-header">
+                    <h1><i class="fas fa-file-export"></i> 结果导出</h1>
+                    <p>导出生成的架构方案数据</p>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-download"></i> 导出选项</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="export-controls">
+                            <div class="form-group">
+                                <label><i class="fas fa-file-export"></i> 导出格式</label>
+                                <div class="format-options">
+                                    <div class="format-option active" data-format="json">
+                                        <i class="fas fa-code"></i>
+                                        <span>JSON</span>
+                                    </div>
+                                    <div class="format-option" data-format="excel">
+                                        <i class="fas fa-file-excel"></i>
+                                        <span>Excel</span>
+                                    </div>
+                                    <div class="format-option" data-format="html">
+                                        <i class="fas fa-file-code"></i>
+                                        <span>HTML报告</span>
+                                    </div>
+                                    <div class="format-option" data-format="text">
+                                        <i class="fas fa-file-alt"></i>
+                                        <span>文本报告</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label><i class="fas fa-filter"></i> 导出范围</label>
+                                <div class="export-range">
+                                    <div class="range-option active" data-range="all">
+                                        <i class="fas fa-layer-group"></i>
+                                        <span>所有方案</span>
+                                        <span class="range-count" id="all-solutions-count">0</span>
+                                    </div>
+                                    <div class="range-option" data-range="selected">
+                                        <i class="fas fa-check-circle"></i>
+                                        <span>选中方案</span>
+                                        <span class="range-count" id="selected-solutions-count">0</span>
+                                    </div>
+                                    <div class="range-option" data-range="current">
+                                        <i class="fas fa-eye"></i>
+                                        <span>当前方案</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="export-filename"><i class="fas fa-file-signature"></i> 文件名</label>
+                                <div class="input-group">
+                                    <input type="text" id="export-filename" class="form-control" value="架构方案_导出">
+                                    <span class="input-group-text" id="file-extension">.json</span>
+                                </div>
+                                <small class="form-text">文件名将自动添加时间戳和扩展名</small>
+                            </div>
+                            
+                            <div class="export-summary">
+                                <h4><i class="fas fa-clipboard-list"></i> 导出摘要</h4>
+                                <div class="summary-content" id="export-summary">
+                                    <p>无方案可导出</p>
+                                </div>
+                            </div>
+                            
+                            <div class="export-actions">
+                                <button id="export-btn" class="btn btn-success" disabled>
+                                    <i class="fas fa-download"></i> 开始导出
+                                </button>
+                                <button id="preview-export-btn" class="btn btn-secondary">
+                                    <i class="fas fa-eye"></i> 预览数据
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card d-none" id="export-preview-card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-eye"></i> 数据预览</h3>
+                        <div class="card-actions">
+                            <button id="close-preview-btn" class="btn btn-sm btn-secondary">
+                                <i class="fas fa-times"></i> 关闭预览
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div id="export-preview-content" class="export-preview">
+                            <!-- 预览内容将通过JavaScript动态生成 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 产品库页面 -->
+            <div id="product-library" class="page">
+                <div class="page-header">
+                    <h1><i class="fas fa-database"></i> 产品库</h1>
+                    <p>查看已导入的产品库列表信息</p>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h3><i class="fas fa-list"></i> 产品库列表</h3>
+                        <div class="card-actions">
+                            <button id="refresh-product-library" class="btn btn-sm btn-secondary">
+                                <i class="fas fa-sync-alt"></i> 刷新
+                            </button>
+                            <button id="clear-product-library" class="btn btn-sm btn-danger">
+                                <i class="fas fa-trash-alt"></i> 清空
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table id="product-library-table" class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>模块名称</th>
+                                        <th>模块类型</th>
+                                        <th>模块分类</th>
+                                        <th>成本(元)</th>
+                                        <th>重量(千克)</th>
+                                        <th>功耗(瓦)</th>
+                                        <th>可靠度</th>
+                                        <th>模块接口</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- 产品库数据将通过JavaScript动态填充 -->
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="table-info">
+                            <span>共 <span id="product-library-count">0</span> 个产品</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模态框模板 -->
+    <div id="modal-container" class="modal-container d-none">
+        <div class="modal-overlay"></div>
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modal-title">模态框标题</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body">
+                <!-- 模态框内容 -->
+            </div>
+            <div class="modal-footer" id="modal-footer">
+                <!-- 模态框按钮 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 消息通知容器 -->
+    <div id="notification-container"></div>
+
+    <script src="js/logger.js"></script>
+    <script src="js/app.js"></script>
+    <!-- <script src="js/modules.js"></script> -->
+    <script src="js/constraints.js"></script>
+    <script src="js/solutions.js"></script>
+    <script src="js/visualization.js"></script>
+</body>
+</html>
